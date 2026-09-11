@@ -624,7 +624,25 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    if not getattr(agent, "_persist_disabled", False):
+    if getattr(agent, "_persist_disabled", False):
+        # Detached forks share a parent's session ID but are not session turns.
+        # Observers still need the final execution status, including failures
+        # and interruptions that produce no output. Never publish their harness
+        # prompt, transcript or response through the session ingestion hooks.
+        _invoke_hook_safely(
+            "on_detached_turn_end", logger,
+            session_id=agent.session_id,
+            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            completed=completed,
+            failed=failed,
+            interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
+            model=agent.model,
+            platform=_platform,
+        )
+    else:
         _invoke_hook_safely(
             "on_session_end", logger,
             session_id=agent.session_id,

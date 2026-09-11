@@ -108,6 +108,8 @@ def _run(
     final_response=None,
     api_call_count=3,
     turn_exit_reason="unknown",
+    interrupted=False,
+    failed=False,
 ):
     messages = [
         {"role": "user", "content": "do a thing"},
@@ -124,8 +126,8 @@ def _run(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
-        interrupted=False,
-        failed=False,
+        interrupted=interrupted,
+        failed=failed,
         messages=messages,
         conversation_history=None,
         effective_task_id="task-1",
@@ -166,32 +168,48 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert "cleanup_errors" not in result
 
 
-@pytest.mark.parametrize(
-    ("persist_disabled", "expected_calls"),
-    [
-        (True, ["transform_llm_output"]),
-        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
-    ],
-)
-def test_persist_disabled_turn_skips_session_end_hook(
-    persist_disabled, expected_calls
+@pytest.mark.parametrize("persist_disabled", [True, False])
+@pytest.mark.parametrize("outcome", ["completed", "failed", "interrupted"])
+def test_detached_end_observation_does_not_publish_a_session_turn(
+    monkeypatch, persist_disabled, outcome
 ):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
     agent = _StubAgent(raise_in=())
     agent._persist_disabled = persist_disabled
+    agent._parent_session_id = agent.session_id if persist_disabled else None
     calls = []
+    manager = PluginManager()
+    ctx = PluginContext(PluginManifest(name="completion-observer", version="1.0.0"), manager)
+    for name in ("transform_llm_output", "post_llm_call", "on_session_end", "on_detached_turn_end"):
+        def capture(_name=name, **kwargs):
+            calls.append((_name, kwargs))
+            return {"user_message": "must not be ingested", "completed": False}
+        assert ctx.register_hook(name, capture) is not None
+    # Keep the real finalizer, lifecycle and plugin dispatch. Only substitute
+    # this isolated manager; observer returns must not change the native result.
+    monkeypatch.setattr("hermes_cli.lifecycle._plugin_hooks", manager.invoke_hook)
+    final_response = None if outcome == "interrupted" else "private final response"
+    result = _run(agent, final_response=final_response, api_call_count=1,
+                  interrupted=outcome == "interrupted", failed=outcome == "failed",
+                  turn_exit_reason="text_response(stop)" if outcome == "completed" else outcome)
 
-    def capture(name, _logger, **_kwargs):
-        calls.append(name)
-        return []
-
-    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
-        _run(
-            agent,
-            final_response="done",
-            api_call_count=1,
-            turn_exit_reason="text_response(stop)",
-        )
-
-    assert calls == expected_calls
-
-
+    end_name = "on_detached_turn_end" if persist_disabled else "on_session_end"
+    expected = [] if outcome == "interrupted" else ["transform_llm_output"]
+    if not persist_disabled and outcome != "interrupted":
+        expected.append("post_llm_call")
+    assert [name for name, _ in calls] == expected + [end_name]
+    payload = calls[-1][1]
+    assert payload["session_id"] == agent.session_id
+    assert payload["task_id"] == "task-1" and payload["turn_id"] == "turn-1"
+    for key in ("completed", "failed", "interrupted", "turn_exit_reason"):
+        assert payload[key] == result[key]
+    assert result["completed"] is (outcome == "completed")
+    if persist_disabled:
+        assert payload["parent_session_id"] == agent.session_id
+        assert set(payload) == {"session_id", "parent_session_id", "task_id", "turn_id",
+                                "completed", "failed", "interrupted", "turn_exit_reason", "model", "platform",
+                                "telemetry_schema_version"}
+        assert all(isinstance(value, (str, bool, int)) for value in payload.values())
+        assert "private final response" not in str(payload)
+        assert "do a thing" not in str(payload)
