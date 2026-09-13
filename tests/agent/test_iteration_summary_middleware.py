@@ -164,3 +164,54 @@ def test_budget_exhaustion_preserves_native_turn_scope_through_sdk_request(
     assert normal[0]["original_user_message"] == "Give a status report."
     assert "native_user_message" not in summary[0]
     assert "original_user_message" not in summary[0]
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages", "codex_responses"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_summary_debug_dump_retains_transformed_sent_body_only_when_enabled(
+        summary_agent, monkeypatch, tmp_path, api_mode, enabled):
+    import json
+
+    agent, manager = summary_agent
+    agent.api_mode = api_mode
+    agent._is_anthropic_oauth = False
+    agent._anthropic_base_url = "http://summary.fixture"
+    agent.logs_dir = tmp_path / "request-logs"
+    agent.logs_dir.mkdir()
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1" if enabled else "0")
+    monkeypatch.delenv("HERMES_DUMP_REQUEST_STDOUT", raising=False)
+    sent, retained = [], []
+    key = "input" if api_mode == "codex_responses" else "messages"
+
+    def reconcile(**context):
+        return {"request": {**context["request"], key: [
+            {"role": "user", "content": f"Checked current revision {context['retry_count']}."}]}}
+
+    manager._middleware["llm_request"] = [reconcile]
+
+    def summarize(request):
+        # A dump must already exist at the provider boundary, including retry.
+        dumps = sorted(agent.logs_dir.glob("request_dump_*.json"))
+        assert len(dumps) == (len(sent) + 1 if enabled else 0)
+        if enabled:
+            retained.append(json.loads(dumps[-1].read_text()))
+        sent.append(copy.deepcopy(request))
+        return "" if len(sent) == 1 else "Checked status."
+
+    client = SimpleNamespace(api_key="fixture-key", chat=SimpleNamespace(
+        completions=SimpleNamespace(create=lambda **kw: summarize(kw))))
+    monkeypatch.setattr(agent, "_ensure_primary_openai_client", lambda **_: client)
+    monkeypatch.setattr(agent, "_anthropic_messages_create", summarize)
+    monkeypatch.setattr(agent, "_run_codex_stream", summarize)
+    monkeypatch.setattr(agent._get_transport(), "normalize_response",
+                        lambda response, **_: SimpleNamespace(content=response))
+    history = [{"role": "user", "content": "Old context before request reconciliation."}]
+    assert agent._handle_max_iterations(history, 2) == "Checked status."
+    assert len(sent) == 2
+    assert len(retained) == (2 if enabled else 0)
+    for dump, request in zip(retained, sent):
+        assert dump["reason"] == "iteration_summary"
+        assert dump["session_id"] == agent.session_id
+        # timeout is an SDK transport option, not part of the submitted body.
+        assert dump["request"]["body"] == {k: v for k, v in request.items() if k != "timeout"}
+        assert "Old context" not in json.dumps(dump["request"]["body"])

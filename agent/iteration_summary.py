@@ -12,6 +12,7 @@ from agent.chat_completion_helpers import (
 )
 from agent.message_metadata import append_message
 from agent.turn_context import substitute_api_content
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +86,16 @@ def _summary_request(agent, request: dict, *, api_request_id: str, api_call_coun
     """Use the bound turn's policy without treating the runtime nudge as new input."""
     from hermes_cli.middleware import apply_llm_request_middleware
 
-    return apply_llm_request_middleware(
+    filtered = apply_llm_request_middleware(
         request, task_id=getattr(agent, "_current_task_id", "") or "",
         turn_id=getattr(agent, "_current_turn_id", "") or "", api_request_id=api_request_id,
         session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
         provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
         api_call_count=api_call_count, retry_count=retry_count, call_role="iteration_summary",
     ).payload
+    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+        agent._dump_api_request_debug(filtered, reason="iteration_summary")
+    return filtered
 
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, api_call_count: int, retry_count: int):
