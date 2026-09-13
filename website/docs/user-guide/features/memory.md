@@ -241,8 +241,10 @@ memory:
   write_approval: false     # false = write freely (default) | true = require approval
 ```
 
-With `refresh_on_turn: true`, Hermes reloads the enabled curated files and rebuilds
-the system prompt at the start of each user turn, including resumed conversations.
+With `refresh_on_turn: true`, Hermes checks the enabled curated files at the start
+of each user turn. A resident conversation rebuilds its prompt only when the rendered
+memory changes. Reconstructing a saved conversation triggers one conservative rebuild,
+because its saved prompt can contain an older snapshot than the newly loaded files.
 The conversation history, session ID, tasks and tools are retained. Memory changes
 made during a tool loop take effect on the next user turn. The native prompt builder
 also refreshes its other sections at this boundary; changed prompt bytes cost a

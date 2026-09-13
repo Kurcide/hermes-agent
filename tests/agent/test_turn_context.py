@@ -593,9 +593,21 @@ def _curated_wire(agent, ctx):
 def test_curated_refresh_crosses_user_turns_but_not_tool_iterations(tmp_path, monkeypatch, refresh):
     """Native file writes reach the next user request only when explicitly enabled."""
     import copy
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
     from tools.memory_tool import load_on_disk_store
 
     agent = _curated_agent(tmp_path / "profile", monkeypatch, refresh=refresh)
+    plugin_calls = []
+    manager = PluginManager()
+    plugin = PluginContext(PluginManifest(name="memory-test", key="memory-test", source="user"), manager)
+
+    def render(info):
+        plugin_calls.append(info["session_id"])
+        return "Keep the delivery plan visible."
+
+    plugin.register_system_prompt_section("memory-test.guidance", render)
+    monkeypatch.setattr("hermes_cli.plugins.render_system_prompt_sections", manager.render_system_prompt_sections)
+    agent._build_system_prompt = MagicMock(wraps=agent._build_system_prompt)
     writer = load_on_disk_store()
     assert writer.add("memory", "The delivery uses the east door.")["success"]
     assert writer.add("user", "The user prefers tea.")["success"]
@@ -608,8 +620,13 @@ def test_curated_refresh_crosses_user_turns_but_not_tool_iterations(tmp_path, mo
     history = first.messages + [{"role": "assistant", "content": "I will prepare the delivery."}]
     saved_history = copy.deepcopy(history)
     saved_tools = agent.tools
+    initial_builds = agent._build_system_prompt.call_count
+    initial_plugin_calls = len(plugin_calls)
+    assert initial_plugin_calls > 0
     stable = _curated_turn(agent, history)
     assert stable.active_system_prompt is first.active_system_prompt
+    assert agent._build_system_prompt.call_count == initial_builds
+    assert len(plugin_calls) == initial_plugin_calls
 
     assert writer.replace("memory", "east door", "The delivery uses the west door.")["success"]
     assert writer.replace("user", "prefers tea", "The user prefers coffee.")["success"]
@@ -621,6 +638,8 @@ def test_curated_refresh_crosses_user_turns_but_not_tool_iterations(tmp_path, mo
     if refresh is True:
         assert "west door" in prompt and "prefers coffee" in prompt
         assert "east door" not in prompt and "prefers tea" not in prompt
+        assert agent._build_system_prompt.call_count == initial_builds + 1
+        assert len(plugin_calls) == initial_plugin_calls + 1
     else:
         assert prompt == original_prompt
     assert "Keep the caller's task instructions." in prompt
@@ -657,6 +676,7 @@ def test_curated_refresh_resumes_stale_prompt_and_removes_deleted_facts(tmp_path
     other.mkdir(parents=True)
     (other / "MEMORY.md").write_text("Unrelated profile fact.", encoding="utf-8")
     resumed = _curated_agent(home, monkeypatch, memory=memory, user=user, db=agent._session_db)
+    resumed._build_system_prompt = MagicMock(wraps=resumed._build_system_prompt)
     assert resumed._session_db.get_session(resumed.session_id)["system_prompt"] == old_prompt
     refreshed = _curated_turn(resumed, history)
     prompt = _curated_wire(resumed, refreshed)[0]["content"]
@@ -664,6 +684,10 @@ def test_curated_refresh_resumes_stale_prompt_and_removes_deleted_facts(tmp_path
     assert ("prefers coffee" in prompt) is user
     assert "east door" not in prompt and "prefers tea" not in prompt
     assert "Unrelated profile fact." not in prompt
+    restored_builds = resumed._build_system_prompt.call_count
+    assert restored_builds == int(memory or user)
+    assert _curated_turn(resumed, history).active_system_prompt is refreshed.active_system_prompt
+    assert resumed._build_system_prompt.call_count == restored_builds
     if memory:
         assert writer.remove("memory", "west door")["success"]
     if user:
