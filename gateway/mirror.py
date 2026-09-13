@@ -25,6 +25,7 @@ def _origin_user_id(entry: dict) -> str:
 def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
@@ -32,8 +33,7 @@ def mirror_to_session(
     cron in_channel seed) to skip the origin scan, which refuses to guess on a
     populated chat (flat + N thread sessions per chat_id) and would drop the mirror.
     Text that is NOT the agent speaking (e.g. a cron brief) must pass
-    ``role="user"``: ``mirror`` metadata is dropped at the SQLite boundary, so an
-    assistant-role mirror replays as a real turn and yields assistant→assistant
+    ``role="user"``: an assistant-role mirror replays as a real turn and yields assistant→assistant
     pairs that break strict-alternation providers, while a user-role mirror
     collapses safely via the consecutive-user merge.
     Returns True if mirrored, False if no matching session or error. Never raises.
@@ -52,7 +52,7 @@ def mirror_to_session(
             return False
         _append_to_sqlite(session_id, {
             "role": role, "content": message_text, "timestamp": datetime.now().isoformat(),
-            "mirror": True, "mirror_source": source_label,
+            "display_metadata": {**(metadata or {}), "mirror": True, "mirror_source": source_label},
         })
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -121,7 +121,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
         db = acquire()
         try:
-            db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+            db.append_message(session_id=session_id, role=message.get("role", "assistant"),
+                              content=message.get("content"), display_metadata=message.get("display_metadata"))
         finally:
             release_or_close(db)
     except Exception as e:

@@ -168,6 +168,13 @@ def _cron_mirror_message(job: dict, text: str) -> str:
     return f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
 
 
+def _cron_mirror_metadata(job: dict) -> dict:
+    metadata = {"cron_job_id": job["id"]}
+    if job.get("execution_id"):
+        metadata["cron_execution_id"] = job["execution_id"]
+    return metadata
+
+
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
     user_id: Optional[str] = None, *, enabled: bool = False,
@@ -189,11 +196,12 @@ def _maybe_mirror_cron_delivery(
         # The brief is not the agent speaking; an assistant-role mirror lands as assistant→assistant after
         # the agent's last turn and breaks strict alternation (issue #2221, the exact failure #2313
         # removed). A user-role turn collapses safely via repair_message_sequence's consecutive-user merge
-        # on every provider, and the prefix preserves the "this came from cron" context that the dropped
-        # SQLite mirror metadata would otherwise lose on replay.
+        # on every provider. The labelled prefix keeps the provenance visible in model context;
+        # durable metadata separately identifies the exact originating job and execution.
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
-            source_label="cron", thread_id=thread_id, user_id=user_id, role="user")
+            source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+            metadata=_cron_mirror_metadata(job))
         if ok:
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
@@ -271,7 +279,7 @@ def _seed_cron_session(
     return mirror_to_session(
         platform_name, str(chat_id), _cron_mirror_message(job, text),
         source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
-        session_id=seeded_session_id,
+        session_id=seeded_session_id, metadata=_cron_mirror_metadata(job),
     )
 
 

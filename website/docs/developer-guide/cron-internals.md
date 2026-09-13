@@ -298,7 +298,27 @@ The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful
 
 ### Session Isolation
 
-Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+Cron execution keeps its own session. Eligible continuable deliveries can mirror or seed the
+reply-facing gateway session as labelled user turns, preserving role alternation. These rows
+retain `mirror_source="cron"`, `cron_job_id`, and, when available, `cron_execution_id` in
+`messages.display_metadata`, including in-channel and thread seeds.
+
+### Source-dependent output erasure
+
+Integrations that retain source-dependent job output can use `cron.owned_output` within
+`cron.jobs.use_cron_store(home)`. `payload_fingerprint(job)` pins the job's prompt, script,
+`no_agent`, origin, and delivery target while allowing schedule and outcome changes.
+`snapshot(job_id)` returns bounded, content-free observations of output files, retained errors,
+queued payloads, and exact native mirror message snapshots grouped by session with a message
+watermark. The caller must verify ownership of the job and its source references.
+
+`erase(job_id, expected_payload_fingerprint=...)` pauses future occurrences, cancels unsent
+queue rows, and erases the exact job's local output files and retained execution/delivery errors.
+It reports `pending` while a native claim, execution, or delivery writer can still produce output;
+a delivery with an unknown outcome can still have a live sender. An `erased` result covers only
+these non-message artifacts. The caller then takes a fresh snapshot, erases the returned message
+preimages through the existing cache-aware gateway/native transcript API, and confirms that no
+matching copies remain. This does not retract externally delivered messages or securely wipe disks.
 
 ## Recursion Guard
 

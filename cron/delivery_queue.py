@@ -44,32 +44,38 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
            WHERE status IN ('delivered','failed','unknown')
              AND (job_json != '{}' OR content != '')"""
     )
+    # A worker wait timeout fences the outcome as unknown while the gateway
+    # can still be sending. Keep its job/owner identity until that writer settles.
+    inflight = [row["execution_id"] for row in conn.execute(
+        "SELECT * FROM deliveries WHERE status='unknown'") if _delivery_is_inflight(row)]
+    terminal = "status IN ('delivered','failed','unknown')"
+    if inflight:
+        terminal += f" AND execution_id NOT IN ({','.join('?' for _ in inflight)})"
     keep = max(0, int(MAX_TERMINAL_DELIVERIES))
     terminal_count = int(
         conn.execute(
-            "SELECT COUNT(*) FROM deliveries "
-            "WHERE status IN ('delivered','failed','unknown')"
+            f"SELECT COUNT(*) FROM deliveries WHERE {terminal}", inflight
         ).fetchone()[0]
     )
     excess = terminal_count - keep
     if excess > 0:
         conn.execute(
-            """INSERT OR IGNORE INTO delivery_tombstones
+            f"""INSERT OR IGNORE INTO delivery_tombstones
                (execution_id, terminal_status, finished_at)
                SELECT execution_id, status, finished_at FROM deliveries
-               WHERE status IN ('delivered','failed','unknown')
+               WHERE {terminal}
                ORDER BY finished_at, created_at, execution_id
                LIMIT ?""",
-            (excess,),
+            (*inflight, excess),
         )
         conn.execute(
-            """DELETE FROM deliveries WHERE execution_id IN (
+            f"""DELETE FROM deliveries WHERE execution_id IN (
                  SELECT execution_id FROM deliveries
-                 WHERE status IN ('delivered','failed','unknown')
+                 WHERE {terminal}
                  ORDER BY finished_at, created_at, execution_id
                  LIMIT ?
                )""",
-            (excess,),
+            (*inflight, excess),
         )
 
 
@@ -122,6 +128,10 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                 conn, "deliveries", "for_failure",
                 "for_failure INTEGER NOT NULL DEFAULT 0",
             )
+            if add_column_if_missing(conn, "deliveries", "job_id", "job_id TEXT"):
+                conn.execute("""UPDATE deliveries SET job_id=json_extract(job_json,'$.id')
+                    WHERE json_valid(job_json) AND json_extract(job_json,'$.id') IS NOT NULL""")
+                conn.commit()
             # Pruning is done explicitly by the paths that create terminal
             # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
             # read-only polls must not pay for a full-table UPDATE + COUNT.
@@ -156,10 +166,11 @@ def enqueue(
             }
         conn.execute(
             """INSERT OR IGNORE INTO deliveries
-               (execution_id, job_json, content, for_failure, status, created_at)
-               VALUES (?, ?, ?, ?, 'pending', ?)""",
+               (execution_id, job_id, job_json, content, for_failure, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
             (
                 str(execution_id),
+                str(job["id"]),
                 json.dumps(job, ensure_ascii=False, sort_keys=True),
                 str(content),
                 int(bool(for_failure)),
@@ -170,6 +181,37 @@ def enqueue(
             "SELECT * FROM deliveries WHERE execution_id=?", (str(execution_id),)
         ).fetchone()
     return dict(row)
+
+
+def _delivery_is_inflight(row) -> bool:
+    if row["status"] == "delivering":
+        return True
+    if row["status"] != "unknown":
+        return False
+    if row["owner_process_id"] == _PROCESS_ID:
+        return row["execution_id"] in _ACTIVE_DELIVERIES
+    return bool(row["owner_pid"] and _owner_is_live(int(row["owner_pid"]), row["owner_started_at"]))
+
+
+def erase_job_payloads(job_id: str) -> dict:
+    """Cancel unsent output and erase this job's terminal copies; active sends remain pending."""
+    with _transaction() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cancelled = conn.execute("""UPDATE deliveries SET status='failed', finished_at=?,
+            job_json='{}', content='', error='Cron output erased before delivery.'
+            WHERE job_id=? AND status='pending'""", (_hermes_now().isoformat(), job_id)).rowcount
+        active = [row["execution_id"] for row in conn.execute(
+            "SELECT * FROM deliveries WHERE job_id=? AND status IN ('delivering','unknown')", (job_id,))
+            if _delivery_is_inflight(row)]
+        # Unknown outcomes can still have a live sender after a wait timeout.
+        terminal = "job_id=? AND status IN ('delivered','failed','unknown')"
+        if active:
+            terminal += f" AND execution_id NOT IN ({','.join('?' for _ in active)})"
+        conn.execute(f"""UPDATE deliveries SET job_json='{{}}', content='',
+            error=CASE WHEN error IS NULL THEN NULL ELSE '[Cron output erased]' END
+            WHERE {terminal}""", (job_id, *active))
+    return {"status": "pending" if active else "erased", "cancelled": cancelled,
+            "delivering": len(active)}
 
 
 def get_status(execution_id: str) -> Optional[dict]:
