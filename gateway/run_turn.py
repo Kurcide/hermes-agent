@@ -1291,6 +1291,10 @@ class GatewayTurnMixin:
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
             return
+        # Foreground-only transports cannot receive later cron/cross-platform
+        # deliveries, so offering to designate them as home would be misleading.
+        if getattr(self._adapter_for_source(source), "supports_async_delivery", True) is False:
+            return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)
         # Multiplex: the home channel may live only in the profile secret scope, not os.environ.
