@@ -948,6 +948,23 @@ def build_turn_context(
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
+    if getattr(agent, "_memory_refresh_on_turn", False) is True and agent._memory_store is not None:
+        # Opt-in freshness boundary: restore first to preserve the session's tool prefix,
+        # then rebuild so neither a resident snapshot nor a saved prompt can hide a correction.
+        # This prologue runs once per user turn, never between that turn's tool iterations.
+        from agent.conversation_loop import _persist_system_prompt
+        from agent.surface_switch import stage_surface_switch_note
+        from agent.system_prompt import invalidate_system_prompt
+
+        previous_prompt = agent._cached_system_prompt
+        invalidate_system_prompt(agent)
+        rebuilt_prompt = agent._build_system_prompt(system_message)
+        agent._cached_system_prompt = previous_prompt if rebuilt_prompt == previous_prompt else rebuilt_prompt
+        stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
+        if rebuilt_prompt != previous_prompt:
+            _persist_system_prompt(
+                agent, "Session DB update_system_prompt failed after curated-memory refresh (session=%s): %s.",
+            )
     active_system_prompt = agent._cached_system_prompt
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same

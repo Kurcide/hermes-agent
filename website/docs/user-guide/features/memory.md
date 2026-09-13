@@ -235,10 +235,20 @@ The same `list` / `delete <id>` / `edit <id>` subcommands work from the in-chat 
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  refresh_on_turn: false   # true = pick up file changes on the next user turn
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
 ```
+
+With `refresh_on_turn: true`, Hermes reloads the enabled curated files and rebuilds
+the system prompt at the start of each user turn, including resumed conversations.
+The conversation history, session ID, tasks and tools are retained. Memory changes
+made during a tool loop take effect on the next user turn. The native prompt builder
+also refreshes its other sections at this boundary; changed prompt bytes cost a
+prefix-cache miss. Leave this off to keep the default session-frozen prompt until
+compression. This setting applies to the built-in files, not an external provider's
+recall policy.
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the
 built-in stores off completely: the `memory` tool is dropped from the schema and

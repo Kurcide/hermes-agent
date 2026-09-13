@@ -1233,6 +1233,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
+    agent._memory_refresh_on_turn = False
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
@@ -1254,6 +1255,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
             )
             mem_config = get_builtin_memory_config(_agent_cfg)
+            agent._memory_refresh_on_turn = is_truthy_value(mem_config.get("refresh_on_turn"), default=False)
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )

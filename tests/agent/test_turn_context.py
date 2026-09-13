@@ -534,3 +534,141 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def _curated_agent(home, monkeypatch, *, refresh=True, memory=True, user=True, db=None):
+    import json
+    from agent.agent_init import _init_memory
+    from agent.system_prompt import build_system_prompt
+    from hermes_cli.config import load_config_readonly
+
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(home)
+    settings = {"memory_enabled": memory, "user_profile_enabled": user, "nudge_interval": 0}
+    if refresh is not None:
+        settings["refresh_on_turn"] = refresh
+    (home / "config.yaml").write_text(json.dumps({"memory": settings}), encoding="utf-8")
+    agent = _FakeAgent()
+    agent.enabled_toolsets = ["memory"]
+    agent.load_soul_identity = False
+    agent.skip_context_files = True
+    agent.pass_session_id = True
+    agent._use_prompt_caching = False
+    agent.ephemeral_system_prompt = ""
+    agent._copy_reasoning_content_for_api = lambda *_a: None
+    agent._should_sanitize_tool_calls = lambda: False
+    agent._cached_system_prompt = None
+    agent._session_db = db or SessionDB(db_path=home / "state.db")
+    if db is None:
+        agent._session_db.create_session(agent.session_id, source="cli")
+    _init_memory(agent, load_config_readonly(), skip_memory=False, platform="cli")
+    agent._build_system_prompt = lambda system_message=None: build_system_prompt(agent, system_message)
+    return agent
+
+
+def _curated_turn(agent, history=None):
+    from agent.agent_runtime_helpers import note_turn_persisted
+    from agent.conversation_loop import _restore_or_build_system_prompt
+    ctx = _build(
+        agent, conversation_history=history, task_id="continuing-task",
+        system_message="Keep the caller's task instructions.",
+        restore_or_build_system_prompt=_restore_or_build_system_prompt,
+    )
+    # These fixtures exercise the prologue and wire builder, without running a model loop.
+    note_turn_persisted(agent)
+    return ctx
+
+
+def _curated_wire(agent, ctx):
+    from agent.turn_context import build_api_messages
+    return build_api_messages(
+        agent, ctx.messages, current_turn_user_idx=ctx.current_turn_user_idx,
+        ext_prefetch_cache="", plugin_user_context="", moa_config=None,
+        active_system_prompt=ctx.active_system_prompt,
+    )[0]
+
+
+@pytest.mark.parametrize("refresh", [True, False, None, "false"])
+def test_curated_refresh_crosses_user_turns_but_not_tool_iterations(tmp_path, monkeypatch, refresh):
+    """Native file writes reach the next user request only when explicitly enabled."""
+    import copy
+    from tools.memory_tool import load_on_disk_store
+
+    agent = _curated_agent(tmp_path / "profile", monkeypatch, refresh=refresh)
+    writer = load_on_disk_store()
+    assert writer.add("memory", "The delivery uses the east door.")["success"]
+    assert writer.add("user", "The user prefers tea.")["success"]
+    # Match startup: both stores begin with the same file contents.
+    agent._memory_store.load_from_disk()
+    first = _curated_turn(agent)
+    first_wire = _curated_wire(agent, first)
+    original_prompt = first_wire[0]["content"]
+    assert "east door" in original_prompt and "prefers tea" in original_prompt
+    history = first.messages + [{"role": "assistant", "content": "I will prepare the delivery."}]
+    saved_history = copy.deepcopy(history)
+    saved_tools = agent.tools
+    stable = _curated_turn(agent, history)
+    assert stable.active_system_prompt is first.active_system_prompt
+
+    assert writer.replace("memory", "east door", "The delivery uses the west door.")["success"]
+    assert writer.replace("user", "prefers tea", "The user prefers coffee.")["success"]
+    # Model/tool iterations consume their turn's already-built request context.
+    assert _curated_wire(agent, first) == first_wire
+    next_turn = _curated_turn(agent, history)
+    wire = _curated_wire(agent, next_turn)
+    prompt = wire[0]["content"]
+    if refresh is True:
+        assert "west door" in prompt and "prefers coffee" in prompt
+        assert "east door" not in prompt and "prefers tea" not in prompt
+    else:
+        assert prompt == original_prompt
+    assert "Keep the caller's task instructions." in prompt
+    assert history == saved_history
+    assert wire[1:1 + len(history)] == history
+    assert agent.tools is saved_tools
+    assert agent.session_id == "sess-1" and next_turn.effective_task_id == "continuing-task"
+    assert agent._session_db.get_session(agent.session_id)["system_prompt"] == prompt
+
+
+@pytest.mark.parametrize("memory,user", [(True, True), (False, True), (True, False), (False, False)])
+def test_curated_refresh_resumes_stale_prompt_and_removes_deleted_facts(tmp_path, monkeypatch, memory, user):
+    """A fresh native store must not let an old DB prompt undo corrections or deletions."""
+    from tools.memory_tool import load_on_disk_store
+
+    home = tmp_path / "active-profile"
+    agent = _curated_agent(home, monkeypatch, memory=memory, user=user)
+    writer = load_on_disk_store()
+    if memory:
+        assert writer.add("memory", "The delivery uses the east door.")["success"]
+    if user:
+        assert writer.add("user", "The user prefers tea.")["success"]
+    if agent._memory_store:
+        agent._memory_store.load_from_disk()
+    first = _curated_turn(agent)
+    old_prompt = first.active_system_prompt
+    history = first.messages + [{"role": "assistant", "content": "Understood."}]
+    if memory:
+        assert writer.replace("memory", "east door", "The delivery uses the west door.")["success"]
+    if user:
+        assert writer.replace("user", "prefers tea", "The user prefers coffee.")["success"]
+    # A separate profile's content must never enter this profile's prompt.
+    other = tmp_path / "other-profile" / "memories"
+    other.mkdir(parents=True)
+    (other / "MEMORY.md").write_text("Unrelated profile fact.", encoding="utf-8")
+    resumed = _curated_agent(home, monkeypatch, memory=memory, user=user, db=agent._session_db)
+    assert resumed._session_db.get_session(resumed.session_id)["system_prompt"] == old_prompt
+    refreshed = _curated_turn(resumed, history)
+    prompt = _curated_wire(resumed, refreshed)[0]["content"]
+    assert ("west door" in prompt) is memory
+    assert ("prefers coffee" in prompt) is user
+    assert "east door" not in prompt and "prefers tea" not in prompt
+    assert "Unrelated profile fact." not in prompt
+    if memory:
+        assert writer.remove("memory", "west door")["success"]
+    if user:
+        assert writer.remove("user", "prefers coffee")["success"]
+    empty = _curated_turn(resumed, history)
+    assert "west door" not in empty.active_system_prompt
+    assert "prefers coffee" not in empty.active_system_prompt
+    assert resumed._session_db.get_session(resumed.session_id)["system_prompt"] == empty.active_system_prompt

@@ -1194,6 +1194,9 @@ DEFAULT_CONFIG = {
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Opt-in: reload curated files and rebuild at each user-turn boundary, including resumed sessions.
+        # Changed prompt bytes cost a prefix-cache miss; no refresh occurs between tool calls.
+        "refresh_on_turn": False,
         # Approval gate for memory writes on BOTH foreground turns and the background review fork.
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
