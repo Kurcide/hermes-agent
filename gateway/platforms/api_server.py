@@ -2192,10 +2192,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
             read_runtime_status)
         runtime = read_runtime_status() or {}
+        # Completion can follow the last status-file write. This authenticated
+        # endpoint already lives in the gateway: use its current work aggregate
+        # while preserving the persisted lifecycle/platform diagnostics.
+        runner = self.gateway_runner or request.app.get("gateway_runner")
+        current_work = getattr(runner, "_active_work_count", None)
+        if callable(current_work):
+            runtime = {**runtime, "active_agents": current_work()}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
-        # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
+        # Served by the gateway process; keep the shared busy/drainable
+        # derivation while using its current work count.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
         readiness = collect_runtime_readiness(

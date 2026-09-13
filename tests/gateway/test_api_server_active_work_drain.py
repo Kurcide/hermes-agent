@@ -72,6 +72,59 @@ class TestActiveApiRunCount:
         assert runner._active_api_run_count() == 0
 
 
+@pytest.mark.asyncio
+async def test_detailed_health_reads_settled_native_work_without_rewriting_status():
+    """A detached native worker can settle after the last status publication."""
+    from gateway.status import read_runtime_status, write_runtime_status
+    from hermes_constants import get_hermes_home
+
+    runner, _adapter = make_restart_runner()
+    api = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "health-fixture"}))
+    runner.adapters = {Platform.API_SERVER: api}
+    api.gateway_runner = runner
+    app = web.Application()
+    app.router.add_get("/health/detailed", api._handle_health_detailed)
+    gate = asyncio.Event()
+    worker = asyncio.create_task(gate.wait())
+    runner._track_deferred_agent_worker(worker, object())
+    write_runtime_status(gateway_state="running", active_agents=runner._active_work_count())
+    status_path = get_hermes_home() / "gateway_state.json"
+    published = status_path.read_bytes()
+    assert read_runtime_status()["active_agents"] == 1
+    try:
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/health/detailed")).status == 401
+            headers = {"Authorization": "Bearer health-fixture"}
+            live = await (await client.get("/health/detailed", headers=headers)).json()
+            assert live["active_agents"] == 1 and live["gateway_busy"] is True
+
+            gate.set()
+            await worker
+            await asyncio.sleep(0)  # Run the native deferred-worker completion callback.
+            assert runner._active_work_count() == 0
+            settled = await (await client.get("/health/detailed", headers=headers)).json()
+            assert settled["active_agents"] == 0 and settled["gateway_busy"] is False
+            assert settled["gateway_state"] == "running"
+            assert settled["updated_at"] == live["updated_at"]
+            assert status_path.read_bytes() == published
+
+            # New API/cron work is counted even though it has no new status write.
+            import cron.scheduler as scheduler
+            api._pending_agent_requests += 1
+            scheduler._running_job_ids.add("health-fixture-job")
+            try:
+                busy = await (await client.get("/health/detailed", headers=headers)).json()
+                assert busy["active_agents"] == runner._active_work_count() == 2
+                assert busy["gateway_busy"] is True
+                assert status_path.read_bytes() == published
+            finally:
+                api._pending_agent_requests -= 1
+                scheduler._running_job_ids.discard("health-fixture-job")
+    finally:
+        gate.set()
+        await worker
+
+
 class TestAPIServerAdapterWorkCount:
 
     @pytest.mark.asyncio
@@ -607,5 +660,3 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
-
-
