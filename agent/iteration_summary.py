@@ -81,8 +81,23 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     return api_messages
 
 
-def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
+def _summary_request(agent, request: dict, *, api_request_id: str, api_call_count: int, retry_count: int) -> dict:
+    """Use the bound turn's policy without treating the runtime nudge as new input."""
+    from hermes_cli.middleware import apply_llm_request_middleware
+
+    return apply_llm_request_middleware(
+        request, task_id=getattr(agent, "_current_task_id", "") or "",
+        turn_id=getattr(agent, "_current_turn_id", "") or "", api_request_id=api_request_id,
+        session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
+        provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
+        api_call_count=api_call_count, retry_count=retry_count, call_role="iteration_summary",
+    ).payload
+
+
+def _managed_summary_call(agent, api_request_id: str, request, callback, *, api_call_count: int, retry_count: int):
     from agent import relay_llm
+    request = _summary_request(agent, request, api_request_id=api_request_id,
+        api_call_count=api_call_count, retry_count=retry_count)
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
@@ -154,33 +169,35 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
     return (agent._get_transport().normalize_response(response, **normalize_kwargs).content or "").strip()
 
 
-def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _codex_summary_attempt(agent, api_messages: list, api_request_id: str, api_call_count: int):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         codex_kwargs.pop("tools", None)
+        codex_kwargs = _summary_request(agent, codex_kwargs, api_request_id=api_request_id,
+            api_call_count=api_call_count, retry_count=retry_count)
         return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
     return _attempt
 
 
-def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str, api_call_count: int):
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, api_call_count=api_call_count, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
-def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
+def _chat_summary_attempt(agent, api_messages: list, api_request_id: str, api_call_count: int):
     summary_kwargs = _iteration_summary_chat_kwargs(agent, api_messages)
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), api_call_count=api_call_count, retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 
@@ -211,7 +228,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
-        attempt = build_attempt(agent, api_messages, summary_api_request_id)
+        attempt = build_attempt(agent, api_messages, summary_api_request_id, api_call_count)
 
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE

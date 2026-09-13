@@ -1104,6 +1104,13 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 | `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
 | `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
 
+Iteration-budget summaries also run `llm_request` on each attempt, after the
+provider-specific kwargs are built. They retain the active session, task and
+turn IDs and add `call_role="iteration_summary"` plus `retry_count`. They do
+not supply a new `native_user_message` or `original_user_message`: the summary
+instruction is a runtime continuation, not another participant input. Keep any
+source or participant policy bound to the existing turn.
+
 **Rules that matter in practice:**
 
 - Request middleware chains: each callback sees the payload as rewritten by earlier callbacks, while `original_args` / `original_request` always carries the pre-middleware copy. Payloads are copied between callbacks, so mutate freely.
