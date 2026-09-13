@@ -847,7 +847,7 @@ class TestMaxIterationsSummaryReplay:
         CLEAN content and diverges the prefix at the earliest injected
         message, exactly when the context is largest."""
         from run_agent import AIAgent
-        from agent.chat_completion_helpers import handle_max_iterations
+        from agent.iteration_summary import handle_max_iterations
 
         agent = AIAgent(
             api_key="test-key",
