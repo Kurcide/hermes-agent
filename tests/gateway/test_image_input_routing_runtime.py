@@ -118,10 +118,8 @@ async def test_native_if_supported_preserves_question_pixels_and_auxiliary(
             "base_url": "http://127.0.0.1:54321/v1", "api_key": "test-key",
         }},
     }
-    # False on the session provider takes precedence over the capable default;
-    # the unknown control has no declared capability in either entry.
-    if capability is None:
-        cfg["providers"]["default-provider"]["models"] = {}
+    # Neither false nor unknown on the current provider can borrow the default
+    # provider's capability merely because their model aliases are identical.
     (tmp_path / "config.yaml").write_text(json.dumps(cfg))
     assert load_config()["agent"]["image_input_mode"] == "native_if_supported"
     raw = base64.b64decode(

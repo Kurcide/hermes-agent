@@ -144,8 +144,10 @@ def _supports_vision_override(
     First hit wins: ``model.supports_vision`` → ``providers.<p>.models.<model>``
     → legacy ``custom_providers[].models.<model>``. Named custom providers are
     rewritten to ``provider="custom"`` at runtime while config keeps the user's
-    name under ``model.provider``, so the requested, runtime and config
-    identities are all tried, plus the bare ``<name>`` of any ``custom:<name>``.
+    name under ``model.provider``, so the config identity is a fallback when
+    no requested identity is available. An explicit per-turn provider must not
+    borrow another provider's capability for a shared model alias. The bare
+    ``<name>`` of any ``custom:<name>`` is also tried.
     """
     if not isinstance(cfg, dict):
         return None
@@ -155,7 +157,8 @@ def _supports_vision_override(
         return top
 
     candidates: List[str] = []
-    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
+    configured_provider = "" if _clean_str(requested_provider) else _clean_str(model_cfg.get("provider"))
+    for candidate in filter(None, (requested_provider, provider, configured_provider)):
         candidates.append(candidate)
         if candidate.startswith("custom:") and candidate[len("custom:"):]:
             candidates.append(candidate[len("custom:"):])
