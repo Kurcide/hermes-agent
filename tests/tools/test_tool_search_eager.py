@@ -54,10 +54,9 @@ def register(ctx):
     manager.unload()
 
 
-def test_named_eager_tools_use_real_native_selection_validation_and_middleware(configured_plugin):
+@pytest.fixture
+def native_agent(configured_plugin):
     from run_agent import AIAgent
-    from agent.turn_tool_validation import validate_tool_calls
-    import model_tools
 
     # Only provider construction is replaced; no inference is performed.
     with patch("agent.process_bootstrap.OpenAI"):
@@ -67,6 +66,17 @@ def test_named_eager_tools_use_real_native_selection_validation_and_middleware(c
             disabled_toolsets=["probe_excluded"], quiet_mode=True,
             skip_context_files=True, skip_memory=True,
         )
+    try:
+        yield agent
+    finally:
+        agent.close()
+
+
+def test_named_eager_tools_use_real_native_selection_validation_and_middleware(native_agent):
+    from agent.turn_tool_validation import validate_tool_calls
+    import model_tools
+
+    agent = native_agent
     named = {tool["function"]["name"]: tool["function"] for tool in agent.tools}
     assert "eager_probe_read" in named
     assert len(named) == len(agent.tools)
