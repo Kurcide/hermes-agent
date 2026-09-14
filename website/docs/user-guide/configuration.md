@@ -1857,7 +1857,7 @@ The injected block covers:
 - **External-write read-back** — after any state-changing write to an external system, read back the exact target before claiming success (internal file edits a tool already confirmed are not re-verified).
 - **Count reconciliation** — declared totals (`total`, `reply_count`, `has_more`) are hard assertions; on mismatch, re-fetch or parse programmatically.
 - **Literal preservation** — never normalize or "repair" identifiers that fail a stated format; a successful lookup does not validate a malformed source token.
-- **Verification-gated completion** — "done" means every named acceptance criterion is verified, never a plausible subset.
+- **Completion claims** — verify every named acceptance criterion against available evidence before claiming the requested work is complete, and state remaining uncertainty. An observed worker or task status such as `done` or `completed` does not by itself establish that verification.
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
 
