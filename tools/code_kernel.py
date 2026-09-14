@@ -53,21 +53,24 @@ def _clip(text):
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
-    status, trace = "ok", ""
+    status, trace, exit_code = "ok", "", 0
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
-        status, trace = "exit", "SystemExit: " + repr(exc.code)
+        status = "exit"
+        exit_code = int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        if exit_code:
+            trace = "SystemExit: " + repr(exc.code)
     except BaseException:
-        status, trace = "error", traceback.format_exc()
+        status, trace, exit_code = "error", traceback.format_exc(), 1
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
         "id": request.get("id", ""), "status": status,
         "stdout": stdout_text, "stderr": stderr_text,
         "stdout_clipped": stdout_clipped, "stderr_clipped": stderr_clipped,
-        "traceback": trace, "execution_count": execution_count,
+        "traceback": trace, "execution_count": execution_count, "exit_code": exit_code,
     }, out.getvalue()
 '''
 
@@ -729,6 +732,11 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
         # The cell called sys.exit(): honor it as end-of-kernel.
         _REGISTRY.discard(key, kernel)
         result["kernel"]["ended"] = True
+        result["exit_code"] = payload["exit_code"]
+        if result["exit_code"]:
+            trace = clean(str(payload.get("traceback", "")))
+            result.update(status="error", error=trace or f"Cell exited with code {result['exit_code']}")
+            cell_stderr += trace
         if cell_stderr:
             result["output"] = _with_stderr(stdout_text, cell_stderr)
     elif status == "error":

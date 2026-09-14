@@ -8,9 +8,13 @@ kill) was verified live on Windows against a bash-backed env; these tests
 pin the host-side protocol logic: spawn parsing, liveness handling,
 state_lost/state_reset reporting, fail-open, and owner isolation.
 """
+import contextlib
+import io
 import json
 import os
 import sys
+import time
+import traceback
 import unittest
 from unittest.mock import patch
 
@@ -23,6 +27,8 @@ from tools.code_kernel_remote import (
     shutdown_all_remote_kernels,
     shutdown_remote_kernels_for_owner,
 )
+from tools.code_kernel import RUNNER_CELL_SOURCE
+from tools.code_execution_tool import _finish_remote_kernel_result
 
 
 class ScriptedEnv:
@@ -104,6 +110,39 @@ class RemoteKernelBase(unittest.TestCase):
 
 
 class TestSpawnAndReuse(RemoteKernelBase):
+    def test_sys_exit_reports_status_and_next_call_spawns(self):
+        for code, exit_code in [(None, 0), (0, 0), (1, 1), (7, 7), ("cannot complete", 1)]:
+            with self.subTest(code=code):
+                # Execute the shared runner's real cell handler; only the remote
+                # file transport is scripted, as in the other tests in this file.
+                namespace = {"contextlib": contextlib, "io": io, "traceback": traceback,
+                             "_CAPTURE_LIMIT": 1_000_000}
+                exec(RUNNER_CELL_SOURCE, namespace)
+                cell_code = ("print('before exit')\nimport sys\n"
+                             "print('cell stderr', file=sys.stderr)\n"
+                             f"raise SystemExit({code!r})")
+                payload, _ = namespace["run_cell"]({"id": "000001", "code": cell_code}, 1)
+                env = ScriptedEnv(_spawn_ok_handlers([payload, _cell(stdout="fresh\n")]))
+                raw = _run(env, cell_code)
+                self.assertTrue(raw["kernel"]["ended"])
+                self.assertEqual(len(_REMOTE_KERNELS), 0)
+                fresh = _run(env)
+                self.assertEqual(fresh["status"], "success", fresh)
+                self.assertFalse(fresh["kernel"]["reused"])
+                self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+                done = json.loads(_finish_remote_kernel_result(
+                    raw, timeout=10, exec_start=time.monotonic()))
+                self.assertEqual(done["status"], "error" if exit_code else "success", done)
+                self.assertEqual(done.get("exit_code"), exit_code, done)
+                self.assertIn("before exit", done["output"])
+                self.assertIn("cell stderr", done["output"])
+                if exit_code:
+                    self.assertIn("SystemExit", done["error"])
+                    self.assertIn(str(code), done["output"])
+                else:
+                    self.assertNotIn("error", done)
+            shutdown_all_remote_kernels()
+
     def test_first_call_spawns_second_reuses(self):
         env = ScriptedEnv(_spawn_ok_handlers(
             [_cell(stdout="one\n"), _cell(stdout="two\n", execution_count=2)],

@@ -161,13 +161,28 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("alive", fresh["output"])
 
     def test_sys_exit_ends_the_kernel(self):
-        with _kernel_config():
-            done = _run("import sys\nsys.exit(0)")
-            self.assertEqual(done["kernel"].get("ended"), True, done)
-            self.assertEqual(len(_KERNELS), 0)
-            fresh = _run("print('respawned')")
-        self.assertEqual(fresh["kernel"]["reused"], False)
-        self.assertIn("respawned", fresh["output"])
+        for code, exit_code in [(None, 0), (0, 0), (1, 1), (7, 7), ("cannot complete", 1)]:
+            with self.subTest(code=code), _kernel_config():
+                done = _run(
+                    "state_before_exit = True\nprint('before exit')\n"
+                    "import sys\nprint('cell stderr', file=sys.stderr)\n"
+                    f"raise SystemExit({code!r})"
+                )
+                self.assertEqual(done["kernel"].get("ended"), True, done)
+                self.assertEqual(len(_KERNELS), 0)
+                fresh = _run("print('state_before_exit' in globals())")
+                self.assertEqual(fresh["status"], "success", fresh)
+                self.assertEqual(fresh["kernel"]["reused"], False)
+                self.assertIn("False", fresh["output"])
+                self.assertEqual(done["status"], "error" if exit_code else "success", done)
+                self.assertEqual(done["exit_code"], exit_code, done)
+                self.assertIn("before exit", done["output"])
+                self.assertIn("cell stderr", done["output"])
+                if exit_code:
+                    self.assertIn("SystemExit", done["error"])
+                    self.assertIn(str(code), done["output"])
+                else:
+                    self.assertNotIn("error", done)
 
     def test_subprocess_fd_output_reaches_the_result(self):
         code = (

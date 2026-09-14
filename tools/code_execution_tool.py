@@ -539,8 +539,10 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         # Same joining shape as the local kernel: stderr and traceback ride in
         # the output under one marker so the model sees the failure inline.
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
-    result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
-                            {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
+    fields = {"tool_calls_made": kernel_result.get("tool_calls_made", 0)}
+    if "exit_code" in kernel_result:
+        fields["exit_code"] = kernel_result["exit_code"]
+    result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start, fields,
                             kernel=kernel_result.get("kernel", {"remote": True}))
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
