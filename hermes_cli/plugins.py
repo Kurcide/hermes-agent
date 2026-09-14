@@ -131,7 +131,10 @@ VALID_HOOKS: Set[str] = {
     "on_detached_turn_end",
     # on_native_turn_settled: synchronous observer after the entered native loop and
     # its durable-lease cleanup, including failed/interrupted and first persisted turns.
-    # Kwargs: session_id, task_id, turn_id, platform. No transcript/response; returns
+    # Kwargs: session_id, task_id, turn_id, platform, outcome. outcome contains only
+    # returned completed/failed/interrupted/failure_retryable booleans and bounded
+    # turn_exit_reason/failure_reason strings; None if no result was returned.
+    # No transcript, response or provider error prose; returns
     # ignored. Detached forks/admission refusals do not fire. A gateway local lease
     # may still be held; gateway reconciliation uses the later hook below.
     "on_native_turn_settled",

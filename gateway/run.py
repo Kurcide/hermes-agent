@@ -1053,11 +1053,14 @@ def build_resume_recovery_note(
         tail_guidance = (
             "Do NOT re-run tool calls whose results already "
             "appear in the history — resume from the first step that has no recorded result.")
+    recovery = (
+        "The owner requested continuation of this same task after its previous turn failed. "
+        if reason == "owner_resume" else
+        f"The previous turn was interrupted by {reason_phrase}; the gateway is now back online. "
+        "Any restart/shutdown command in the history has already run — do NOT re-execute or verify it. "
+    )
     return (
-        f"[System note: The previous turn was interrupted by "
-        f"{reason_phrase}; the gateway is now back online. "
-        f"Any restart/shutdown command in the history has already "
-        f"run — do NOT re-execute or verify it. {resume_guidance} {tail_guidance}]"
+        f"[System note: {recovery}{resume_guidance} {tail_guidance}]"
         + (f"\n\n{message}" if message else ""))
 
 
@@ -3926,8 +3929,9 @@ class GatewayRunner(
     _STUCK_LOOP_FILE = ".restart_failure_counts"
 
     # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by suspend_recently_active()
-    # on crash recovery (no .clean_shutdown marker). All mean "killed mid-turn" -> startup auto-resume.
-    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
+    # on crash recovery (no .clean_shutdown marker). owner_resume retains an explicitly requested
+    # continuation of a failed turn if the gateway exits before its admission completes.
+    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted", "owner_resume"})
 
     _MAX_SUPERVISED_RESTARTS = 5
     # Ran this long before crashing = HEALTHY (isolated crash, not a crash-loop); restart counter resets.

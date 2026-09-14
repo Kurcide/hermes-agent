@@ -655,7 +655,8 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 
 
 @pytest.mark.asyncio
-async def test_reconnect_reschedule_is_platform_scoped():
+@pytest.mark.parametrize('reason', ['restart_interrupted', 'owner_resume'])
+async def test_reconnect_reschedule_is_platform_scoped(reason):
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""
     runner, adapter = make_restart_runner()
@@ -672,7 +673,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
         platform=Platform.TELEGRAM,
         chat_type="dm",
         resume_pending=True,
-        resume_reason="restart_interrupted",
+        resume_reason=reason,
         last_resume_marked_at=datetime.now(),
     )
     discord_entry = SessionEntry(

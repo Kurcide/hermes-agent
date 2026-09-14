@@ -74,6 +74,7 @@ class TurnFacadeMixin:
         task_started = task_finished = False
         turn_entered = False
         relay_outcome = "failed"
+        settled_outcome = None
 
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
@@ -146,6 +147,19 @@ class TurnFacadeMixin:
                     if lease is not None:
                         lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
+            # Early failed results can bypass on_session_end. Carry only the
+            # returned machine-readable outcome to the settled observer, never
+            # provider error prose, user messages or an apparent answer.
+            settled_outcome = {
+                key: terminal[key]
+                for key in ("completed", "failed", "interrupted", "failure_retryable")
+                if isinstance(terminal.get(key), bool)
+            }
+            settled_outcome.update({
+                key: terminal[key][:256]
+                for key in ("turn_exit_reason", "failure_reason")
+                if isinstance(terminal.get(key), str)
+            })
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
                 else "failed" if terminal.get("failed") is True
@@ -212,6 +226,7 @@ class TurnFacadeMixin:
                                     session_id=str(getattr(self, "session_id", None) or session_id),
                                     task_id=effective_task_id, turn_id=relay_turn_id,
                                     platform=task_context["platform"],
+                                    outcome=settled_outcome,
                                 )
                         except Exception:
                             logger.warning("Native turn settled hook failed", exc_info=True)

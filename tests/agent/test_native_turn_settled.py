@@ -23,6 +23,39 @@ def _context(monkeypatch):
     return PluginContext(PluginManifest(name="settled-test"), manager)
 
 
+@pytest.mark.parametrize("observed", [True, False])
+def test_native_settled_reports_returned_failure_without_answer_payload(tmp_path, monkeypatch, observed):
+    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
+    ctx = _context(monkeypatch)
+    receipts = []
+    if observed:
+        ctx.register_hook("on_native_turn_settled", lambda **value: receipts.append(value))
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("failed-source", source="cli")
+    result = {"completed": False, "failed": True, "failure_reason": "timeout",
+              "failure_retryable": True, "final_response": "private runtime advice",
+              "messages": [{"role": "user", "content": "private request"}],
+              "error": "private provider detail"}
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", lambda *_a, **_kw: result)
+    try:
+        agent = _agent_with_db(db, session_id="failed-source", platform="cli")
+        assert AIAgent.run_conversation(agent, "work", task_id="accepted-task") is result
+        assert db.try_acquire_session_turn_lease("failed-source", "after-failure")
+        db.release_session_turn_lease("failed-source", "after-failure")
+        if observed:
+            assert len(receipts) == 1
+            assert receipts[0]["session_id"] == "failed-source"
+            assert receipts[0]["task_id"] == "accepted-task"
+            assert receipts[0]["turn_id"].startswith("failed-source:accepted-task:")
+            assert receipts[0]["outcome"] == {"completed": False, "failed": True,
+                "failure_reason": "timeout", "failure_retryable": True}
+            assert "private" not in str(receipts)
+        else:
+            assert not receipts
+    finally:
+        db.close()
+
+
 def test_native_settled_can_erase_after_persistence_and_release_including_first_turn(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
     ctx = _context(monkeypatch)
