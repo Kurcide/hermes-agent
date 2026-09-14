@@ -39,6 +39,8 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
+    truncated_response_parts: Any
+    length_continue_retries: Any
     current_turn_user_idx: Any
     result: Optional[Dict[str, Any]] = None
 
@@ -48,7 +50,8 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    truncated_tool_call_retries: Any, truncated_response_parts: Any,
+    length_continue_retries: Any, current_turn_user_idx: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -62,6 +65,8 @@ def run_tool_round(
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            truncated_response_parts=truncated_response_parts,
+            length_continue_retries=length_continue_retries,
             current_turn_user_idx=current_turn_user_idx,
         )
 
@@ -160,6 +165,17 @@ def run_tool_round(
         final_response = ""
         failed = True
         return _verdict("break")
+
+    # An accepted tool round ends the preceding text segment, including when
+    # its result is an error. Keep the transcript, but do not prepend those
+    # fragments to the later answer. Validation retries above do not end it.
+    if length_continue_retries or truncated_response_parts:
+        truncated_response_parts = []
+        length_continue_retries = 0
+        for message in messages:
+            if isinstance(message, dict):
+                message.pop("_length_continuation_fragment", None)
+                message.pop("_length_continuation_nudge", None)
 
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
