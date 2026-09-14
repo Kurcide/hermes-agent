@@ -67,7 +67,7 @@ def test_summary_rechecks_each_attempt_without_rebinding_the_runtime_nudge(
     monkeypatch.setattr(agent, "_run_codex_stream", summarize)
     # Provider-specific builders stay real; only response parsing is irrelevant here.
     monkeypatch.setattr(agent._get_transport(), "normalize_response",
-                        lambda response, **_: SimpleNamespace(content=response))
+                        lambda response, **_: SimpleNamespace(content=response, tool_calls=None))
 
     def reconcile(**context):
         callbacks.append(context)
@@ -204,7 +204,7 @@ def test_summary_debug_dump_retains_transformed_sent_body_only_when_enabled(
     monkeypatch.setattr(agent, "_anthropic_messages_create", summarize)
     monkeypatch.setattr(agent, "_run_codex_stream", summarize)
     monkeypatch.setattr(agent._get_transport(), "normalize_response",
-                        lambda response, **_: SimpleNamespace(content=response))
+                        lambda response, **_: SimpleNamespace(content=response, tool_calls=None))
     history = [{"role": "user", "content": "Old context before request reconciliation."}]
     assert agent._handle_max_iterations(history, 2) == "Checked status."
     assert len(sent) == 2
