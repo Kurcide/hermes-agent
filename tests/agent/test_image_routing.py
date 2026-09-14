@@ -6,6 +6,7 @@ import base64
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from agent.image_routing import (
     _coerce_capability_bool,
@@ -56,6 +57,20 @@ class TestExplicitAuxVisionOverride:
 
 
 class TestDecideImageInputMode:
+
+    @pytest.mark.parametrize("capability", [True, False, None])
+    @pytest.mark.parametrize("mode", ["auto", "native_if_supported", "native", "text"])
+    def test_explicit_auxiliary_precedence_is_opt_in(self, capability, mode):
+        cfg = {
+            "agent": {"image_input_mode": mode},
+            "auxiliary": {"vision": {"provider": "dedicated-vision"}},
+        }
+        with patch("agent.image_routing._lookup_supports_vision", return_value=capability):
+            result = decide_image_input_mode("current-provider", "current-model", cfg)
+        expected = "native" if mode == "native" or (
+            mode == "native_if_supported" and capability is True
+        ) else "text"
+        assert result == expected
 
 
 

@@ -82,6 +82,109 @@ def test_pre_turn_named_custom_provider_identity_selects_vision_override(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("capability", [True, False, None])
+async def test_native_if_supported_preserves_question_pixels_and_auxiliary(
+    tmp_path, monkeypatch, capability,
+):
+    """The gateway and registered tool use the same actual per-turn capability."""
+    import asyncio
+    import base64
+    import json
+    from types import SimpleNamespace
+
+    from agent import image_routing
+    from agent.auxiliary_client import (
+        aux_probe_mode, resolve_vision_provider_client, scoped_runtime_main,
+    )
+    from gateway.run_turn_runner import TurnRunner
+    from hermes_cli.config import load_config
+    from tools import vision_tools
+    from tools.registry import registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # No catalog network lookup for the deliberately unknown capability control.
+    monkeypatch.setattr(image_routing, "_VISION_PROBES", ())
+    cfg = {
+        "agent": {"image_input_mode": "native_if_supported"},
+        "model": {"provider": "default-provider", "default": "shared-model"},
+        "providers": {
+            "default-provider": {"models": {"shared-model": {"supports_vision": True}}},
+            "session-provider": {"models": {"shared-model": {
+                **({"supports_vision": capability} if capability is not None else {}),
+            }}},
+        },
+        "auxiliary": {"vision": {
+            "provider": "custom", "model": "fallback-vision",
+            "base_url": "http://127.0.0.1:54321/v1", "api_key": "test-key",
+        }},
+    }
+    # False on the session provider takes precedence over the capable default;
+    # the unknown control has no declared capability in either entry.
+    if capability is None:
+        cfg["providers"]["default-provider"]["models"] = {}
+    (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+    assert load_config()["agent"]["image_input_mode"] == "native_if_supported"
+    raw = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    )
+    image = tmp_path / "view.png"
+    image.write_bytes(raw)
+    question = "Is this view useful for checking the work area? State its limits briefly."
+    runtime = {
+        "provider": "custom", "requested_provider": "session-provider",
+        "model": "shared-model", "base_url": "http://127.0.0.1:54322/v1",
+    }
+    calls = []
+
+    async def auxiliary_response(**kwargs):
+        # Keep native media preparation and configured auxiliary resolution real;
+        # replace only the completion, without opening a server or making inference.
+        with aux_probe_mode():
+            provider, client, model = resolve_vision_provider_client(model=kwargs.get("model"))
+            assert provider == "custom"
+            assert str(client.base_url).rstrip("/") == cfg["auxiliary"]["vision"]["base_url"]
+            assert model == "fallback-vision"
+        assert kwargs["task"] == "vision"
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="Derived image description.", reasoning_content=None),
+        )])
+
+    monkeypatch.setattr(vision_tools, "async_call_llm", auxiliary_response)
+    runner = _make_runner()
+    monkeypatch.setattr(runner, "_resolve_session_agent_runtime", lambda **_: (
+        runtime["model"], runtime,
+    ))
+    source = _source()
+    session_key = "current-image-session"
+    message = await runner._enrich_inbound_images(source, session_key, question, [str(image)])
+    turn = TurnRunner(runner, SimpleNamespace(session_key=session_key, message=message))
+    prepared = turn._native_image_run_message()
+    with scoped_runtime_main(runtime):
+        result = await asyncio.to_thread(
+            registry.dispatch, "vision_analyze", {"image_url": str(image), "question": question},
+        )
+    if capability is True:
+        assert calls == []
+        assert message == question
+        assert prepared[0]["type"] == "text"
+        assert prepared[0]["text"].startswith(question)
+        assert str(image) in prepared[0]["text"]
+        assert base64.b64decode(prepared[1]["image_url"]["url"].split(",", 1)[1]) == raw
+        assert result["_multimodal"] is True
+        image_part = next(p for p in result["content"] if p["type"] == "image_url")
+        assert base64.b64decode(image_part["image_url"]["url"].split(",", 1)[1]) == raw
+    else:
+        assert len(calls) == 2
+        assert isinstance(prepared, str)
+        assert question in prepared and "Derived image description." in prepared
+        assert json.loads(result)["analysis"] == "Derived image description."
+        assert question in calls[-1]["messages"][0]["content"][0]["text"]
+    assert runner._consume_pending_native_image_paths(session_key) == []
+    assert image.read_bytes() == raw
+
+
+@pytest.mark.asyncio
 async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypatch):
     """A slow route-identity check must not block gateway heartbeats."""
     import asyncio

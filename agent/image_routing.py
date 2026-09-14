@@ -3,10 +3,12 @@
 ``native`` attaches images as OpenAI-style ``image_url`` parts; ``text`` runs
 ``vision_analyze`` up-front and prepends the lossy description (right for
 non-vision models). :func:`decide_image_input_mode` picks once per turn from
-``agent.image_input_mode`` (``auto`` | ``native`` | ``text``): in ``auto`` an
+``agent.image_input_mode`` (``auto`` | ``native_if_supported`` | ``native`` | ``text``): in ``auto`` an
 explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
 main models (``native`` is the absolute override); else ``supports_vision``
-(config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+(config override or catalog) decides. ``native_if_supported`` checks that capability
+first, retaining the auxiliary text route for false or unknown capabilities.
+``vision_analyze`` stays a tool regardless.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = frozenset({"auto", "native", "text"})
+_VALID_MODES = frozenset({"auto", "native_if_supported", "native", "text"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -362,9 +364,9 @@ def decide_image_input_mode(
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
     auto; ``requested_provider`` is the identity before runtime canonicalization)."""
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
-    if mode_cfg != "auto":
+    if mode_cfg in {"native", "text"}:
         return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
+    if mode_cfg == "auto" and _explicit_aux_vision_override(cfg):
         return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}

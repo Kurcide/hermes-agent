@@ -236,7 +236,9 @@ DEFAULT_CONFIG = {
         # when the model reports supports_vision=True AND auxiliary.vision.provider is not
         # explicitly set, else text; "native" = always attach (non-vision models error at the
         # provider or get a last-chance text fallback); "text" = always pre-analyze with
-        # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
+        # vision_analyze and prepend the description. "native_if_supported" checks the
+        # current model's capability first, keeping the auxiliary route if false or unknown.
+        # vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort

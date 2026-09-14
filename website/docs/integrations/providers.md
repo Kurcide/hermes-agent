@@ -1412,17 +1412,26 @@ The configured `extra_body` follows the provider everywhere: it is merged at age
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
-**Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
+**Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, declare its capability with `model.supports_vision: true`. With the default `agent.image_input_mode: auto`, Hermes attaches images natively unless you have explicitly configured an `auxiliary.vision` backend; that explicit backend takes precedence.
 
 ```yaml
 model:
   provider: custom
   base_url: http://localhost:8080/v1
   default: qwen3.6-35b-a3b
-  supports_vision: true   # send images natively; otherwise vision_analyze pre-describes them
+  supports_vision: true   # declare the model's image-input capability
 ```
 
 The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
+
+To prefer native images while retaining your configured auxiliary vision backend for other models, opt in:
+
+```yaml
+agent:
+  image_input_mode: native_if_supported
+```
+
+This checks the current turn's resolved provider and model. A true vision capability sends the original question and pixels to that model without a preliminary caption; false or unknown keeps the existing auxiliary text route. The `vision_analyze` tool also uses its existing native media path where the provider supports image tool results. Derived captions remain descriptions, and this setting does not establish their factual accuracy. Older builds do not recognize this opt-in mode and retain `auto` behavior. The default `auto` and explicit `native` (force attachment) and `text` modes are unchanged.
 
 Switch between them mid-session with the triple syntax:
 
