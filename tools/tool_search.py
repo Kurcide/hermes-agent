@@ -47,6 +47,8 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Visibility only: these exact names must already be in the session's admitted schemas.
+    eager_tools: frozenset[str] = frozenset()
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -60,6 +62,7 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
+        eager_raw = raw.get("eager")
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -69,7 +72,9 @@ class ToolSearchConfig:
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+                         if isinstance(defer_raw, (list, tuple, set)) else None),
+            eager_tools=(frozenset(n.strip() for n in eager_raw if isinstance(n, str) and n.strip())
+                         if isinstance(eager_raw, (list, tuple, set)) else frozenset()))
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -160,6 +165,7 @@ def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
 
 
 def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   *, eager_tools: frozenset[str] = frozenset(),
                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
     after classification)."""
@@ -167,7 +173,8 @@ def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozen
     deferrable: List[Dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+            (deferrable if name not in eager_tools and is_deferrable_tool_name(name, defer_tools)
+             else visible).append(td)
     return visible, deferrable
 
 
@@ -343,7 +350,10 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     config = config or load_config()
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
-    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    # Keep bridge eligibility unchanged: already-scoped tool_call/describe still work for
+    # an eager tool. Only its direct schema replaces its entry in the embedded listing.
+    visible, deferrable = classify_tools(incoming, config.effective_defer_tools,
+                                        eager_tools=config.eager_tools)
     connections_granted = connections_in_scope(incoming)
     if not deferrable:
         if should_activate(config, 0, context_length, connections_granted=connections_granted):

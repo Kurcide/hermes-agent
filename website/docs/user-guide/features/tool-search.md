@@ -103,6 +103,7 @@ tools:
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
+    eager: []           # exact admitted tool names to keep directly visible
 ```
 
 | Key | Default | Meaning |
@@ -113,6 +114,20 @@ tools:
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+| `eager` | `[]` | Exact tool names whose schemas stay directly visible, even if normally deferred. Only tools already enabled and available in this session qualify. Other tools retain normal discovery. |
+
+Use a small `eager` list for frequently needed plugin tools when loading their
+schemas on demand adds an unnecessary round trip. Names are exact, not patterns;
+unknown, disabled, unavailable, and other-profile tools are never enabled by this
+setting. `eager` takes precedence over `defer` for the same name. An eager tool's
+schema appears once, without a duplicate entry in the embedded deferred listing.
+Existing scoped `tool_describe` and `tool_call` calls remain compatible with that
+tool; their middleware, approvals, and session checks are unchanged.
+
+Apply changes when starting a new conversation/agent so its tool schema stays
+stable. The empty default preserves the previous behavior. Older native versions
+that do not recognize `eager` keep their normal deferral behavior; this setting
+does not require changing plugin registration or tool handlers.
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
