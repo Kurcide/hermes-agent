@@ -706,11 +706,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return bool(bridge_exit)
 
     async def _poll_messages(self) -> None:
+        from aiohttp import ClientConnectionError
+
+        connection_failures = 0
         while self._running:
             if not self._http_session or await self._report_bridge_exit():
                 break
             try:
                 async with self._bridge_req("get", "messages", 30) as resp:
+                    # Any HTTP response proves the bridge is still reachable.
+                    connection_failures = 0
                     if resp.status == 200:
                         for msg_data in await resp.json():
                             event = await self._build_message_event(msg_data)
@@ -726,6 +731,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception as e:
                 if await self._report_bridge_exit():
                     break
+                # Reused bridges have no Popen handle. Hand sustained connection
+                # loss to the existing gateway reconnect owner without signalling
+                # the external process. Long-poll timeouts are not process death.
+                if (self._bridge_process is None and self._running
+                        and not getattr(self, "_shutting_down", False)
+                        and isinstance(e, ClientConnectionError)
+                        and not isinstance(e, asyncio.TimeoutError)):
+                    connection_failures += 1
+                    if connection_failures >= 3:
+                        self._set_fatal_error("whatsapp_bridge_unreachable",
+                                              "WhatsApp bridge connection repeatedly failed.", retryable=True)
+                        await self._notify_fatal_error()
+                        break
+                else:
+                    connection_failures = 0
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval

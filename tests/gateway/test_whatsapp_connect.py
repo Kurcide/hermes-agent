@@ -229,6 +229,79 @@ class TestBridgeRuntimeFailure:
     """Verify runtime bridge death is surfaced as a fatal adapter error."""
 
     @pytest.mark.asyncio
+    async def test_reused_bridge_connection_loss_notifies_recovery(self, tmp_path):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        adapter = _make_adapter()
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// retained external bridge\n")
+        adapter._session_path = tmp_path / "session"
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        app = web.Application()
+
+        async def health(request):
+            return web.json_response({"status": "connected", "scriptHash": _file_content_hash(bridge),
+                                      "sendReadReceipts": False})
+
+        app.router.add_get("/health", health)
+        original_sleep = asyncio.sleep
+
+        async def short_sleep(delay):
+            await original_sleep(min(delay, .01))
+
+        with patch.object(adapter, "_terminate_bridge") as terminate, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", short_sleep):
+            async with TestServer(app) as server:
+                adapter._bridge_port = server.port
+                assert await adapter._reuse_running_bridge(bridge)
+                assert adapter._bridge_process is None
+                await server.close()
+                try:
+                    await asyncio.wait_for(adapter._poll_task, timeout=5)
+                    assert adapter.has_fatal_error
+                    assert adapter.fatal_error_retryable
+                    fatal_handler.assert_awaited_once_with(adapter)
+                finally:
+                    await adapter.disconnect()
+            terminate.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response_status", [200, 401, 500])
+    async def test_reused_bridge_http_response_resets_connection_failures(self, response_status):
+        from aiohttp import ClientConnectionError
+
+        adapter = _make_adapter()
+        adapter._running = True
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        response = MagicMock(status=response_status)
+        response.json = AsyncMock(return_value=[])
+        recovered = MagicMock(status=200)
+
+        async def finish_polling():
+            adapter._running = False
+            return []
+
+        recovered.json = AsyncMock(side_effect=finish_polling)
+        session = MagicMock()
+        session.get.side_effect = [
+            ClientConnectionError("connection lost"), ClientConnectionError("connection lost"),
+            _AsyncCM(response),
+            ClientConnectionError("connection lost"), ClientConnectionError("connection lost"),
+            _AsyncCM(recovered),
+        ]
+        adapter._http_session = session
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            await adapter._poll_messages()
+
+        recovered.json.assert_awaited_once()
+        assert not adapter.has_fatal_error
+        fatal_handler.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_marks_retryable_fatal_when_managed_bridge_exits(self):
         adapter = _make_adapter()
         fatal_handler = AsyncMock()
