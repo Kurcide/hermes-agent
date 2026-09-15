@@ -117,13 +117,13 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         "include_row_ids": True,
     }
     assert any(
-        kind == "lifecycle"
+        kind == "system"
         and text
         and "waiting for it to finish" in text
         for kind, text in status_events
     )
     assert any(
-        kind == "lifecycle"
+        kind == "system"
         and text
         and "loading the latest transcript" in text
         for kind, text in status_events
@@ -223,7 +223,7 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     assert "send it again" in result["final_response"]
     assert [event[0] for event in db.events] == ["acquire"]
     assert any(
-        kind == "lifecycle"
+        kind == "system"
         and text
         and "waiting for it to finish" in text
         for kind, text in status_events

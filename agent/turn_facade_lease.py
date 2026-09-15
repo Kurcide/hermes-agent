@@ -262,7 +262,7 @@ def admit_durable_turn_lease(
     def _on_wait(elapsed: float) -> None:
         nonlocal waited
         waited = True
-        agent._emit_status(
+        agent._emit_system_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
             if elapsed < 1.0 else
@@ -286,7 +286,7 @@ def admit_durable_turn_lease(
         previous_session, previous_revision = getattr(agent, '_transcript_redaction_revision', ('', 0))
         redacted = revision != (previous_revision if previous_session == session_id else 0)
         if waited or redacted:
-            agent._emit_status("Forgotten content was removed; reloading this session." if redacted else
+            agent._emit_system_status("Forgotten content was removed; reloading this session." if redacted else
                                "Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission. Explicit erasure also invalidates an idle client's old history,

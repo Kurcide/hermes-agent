@@ -773,9 +773,11 @@ class GatewayTurnMixin:
         from gateway.run import _stamp_hygiene_compression_provenance
         _stamp_hygiene_compression_provenance(agent, desc, getattr(ActivityProvenance, provenance_name), debug_label)
 
-    async def _hmwa_hygiene_notify(self, source, meta, message, what):
+    async def _hmwa_hygiene_notify(self, source, meta, message, what, *, routine=False):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
         try:
+            if routine and await self._deliver_system_notice_home(source, message):
+                return
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
                 await _adapter.send(source.chat_id, message, metadata=meta)
@@ -871,6 +873,7 @@ class GatewayTurnMixin:
         )
         await self._hmwa_hygiene_notify(
             source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            routine=True,
         )
         raise
 

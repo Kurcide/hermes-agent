@@ -52,6 +52,24 @@ The `hermes config set` command automatically routes values to the right file â€
 
 ## Configuration Precedence
 
+### Routine gateway notices
+
+To send routine session reload and automatic compression notices to your configured
+WhatsApp home, run `/sethome` there and add this to that profile's `config.yaml`:
+
+```yaml
+gateway:
+  system_notices_home_platform: whatsapp
+```
+
+The target may be any connected platform with a configured home. Task errors,
+approval questions, and assistant answers stay in their original conversation.
+Without this setting, or when the home is unavailable, the existing conversation
+route and status filters apply. Home notices use the same profile's configuration
+and transport; they do not start another agent turn.
+
+### Setting priority
+
 Settings are resolved in this order (highest priority first):
 
 1. **CLI arguments** â€” e.g., `hermes chat --model anthropic/claude-sonnet-4` (per-invocation override)

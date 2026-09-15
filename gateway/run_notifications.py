@@ -746,9 +746,45 @@ class GatewayNotificationsMixin:
                 continue
             yield platform, platform_cfg, home, transport
 
-    async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
+    async def _deliver_system_notice_home(self, source, message: str, *, user_config=None) -> bool:
+        """Opt-in routine notices use this profile's home; unavailable homes keep the task route."""
+        from gateway.run import _load_gateway_config, load_gateway_config, _redact_gateway_user_facing_secrets
+        from gateway.run import _gateway_surface_passes_raw_text
+        from gateway.delivery import resolve_delivery_transport
+        # Programmatic clients need their native status stream for liveness.
+        if _gateway_surface_passes_raw_text(source.platform):
+            return False
+        profile = getattr(source, "profile", None)
+        if getattr(self.config, "multiplex_profiles", False) and profile and profile != "default":
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(profile):
+                logger.warning("System notice profile unavailable; retaining the current task route")
+                return False
+        with self._profile_scope_for_source(source):
+            raw = user_config if user_config is not None else _load_gateway_config()
+            target = (raw.get("gateway") or {}).get("system_notices_home_platform")
+            if not target:
+                return False
+            try:
+                platform = Platform(str(target).strip().lower())
+                config = load_gateway_config()
+                home = config.get_home_channel(platform)
+                transport = resolve_delivery_transport(
+                    platform, config, self._adapters_for_profile(profile),
+                )
+                if home and home.chat_id and transport:
+                    return await self._send_home_channel_message(
+                        platform, home, transport, _redact_gateway_user_facing_secrets(str(message)),
+                        "System notice home delivery failed for %s:%s: %s", interim=True,
+                    )
+            except (ValueError, OSError) as exc:
+                logger.warning("System notice home configuration unavailable: %s", exc)
+        logger.warning("System notice home unavailable; retaining the current task route")
+        return False
+
+    async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str, *, interim=False) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
-        from gateway.run import _non_conversational_metadata
+        from gateway.run import _interim_metadata, _non_conversational_metadata
         try:
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
@@ -758,6 +794,8 @@ class GatewayNotificationsMixin:
                 if home.scope_id:
                     metadata["scope_id"] = home.scope_id
             send_metadata = _non_conversational_metadata(metadata, platform=platform)
+            if interim:
+                send_metadata = _interim_metadata(send_metadata)
             if send_metadata is not None or transport.is_relay:
                 result = await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
             else:

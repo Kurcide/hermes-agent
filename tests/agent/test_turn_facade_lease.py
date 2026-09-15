@@ -44,6 +44,7 @@ def _agent(db, **overrides):
         statuses=[],
     )
     agent._emit_status = agent.statuses.append
+    agent._emit_system_status = agent.statuses.append
     agent._emit_warning = agent.statuses.append
     agent._touch_activity = lambda *a, **k: None
     agent._liveness_activity_lock = lambda: threading.Lock()

@@ -76,6 +76,10 @@ class StatusOutputMixin:
         """Emit a lifecycle status message (CLI + gateway ``status_callback``)."""
         self._emit_status_kind("lifecycle", message, origin="_emit_status")
 
+    def _emit_system_status(self, message: str) -> None:
+        """Emit routine housekeeping that needs no action in the current task."""
+        self._emit_status_kind("system", message, origin="_emit_system_status")
+
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning for degraded side paths where the turn continues but the user must know."""
         self._emit_status_kind("warn", message, origin="_emit_warning")
