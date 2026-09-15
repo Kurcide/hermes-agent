@@ -59,6 +59,8 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
+    single_emitted_call = len(assistant_message.tool_calls) == 1
+
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
@@ -156,7 +158,13 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    batch_start = len(messages)
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+    successful_result = None
+    for message in messages[batch_start:]:
+        succeeded = message.pop("_tool_execution_succeeded", False)
+        if succeeded and single_emitted_call and len(messages) == batch_start + 1:
+            successful_result = message
 
     if getattr(agent, "_incremental_persistence_failed", False):
         # Tool result could not be made canonical: never send the in-memory result to
@@ -192,6 +200,39 @@ def run_tool_round(
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
         return _verdict("break")
+
+    if successful_result is not None:
+        from agent.tool_turn_completion import get_tool_turn_completion
+        completion = get_tool_turn_completion(
+            agent, tool_call=assistant_msg["tool_calls"][0],
+            tool_result=successful_result, effective_task_id=effective_task_id,
+        )
+        if completion is not None:
+            final_response, provenance = completion
+            append_message(messages, {
+                "role": "assistant", "content": final_response,
+                "display_kind": "runtime_handoff",
+                "display_metadata": {**provenance, "response_origin": "runtime"},
+            })
+            # A runtime receipt is not streamed speculatively: canonical storage
+            # must succeed before a caller can observe a successful handoff.
+            try:
+                persisted = agent._flush_messages_to_session_db(messages, conversation_history) is not False
+            except Exception as exc:
+                from hermes_state import classify_persistence_error
+                agent._last_persistence_error_cause = classify_persistence_error(exc)
+                logger.warning("Runtime handoff persistence failed: %s", exc)
+                persisted = False
+            if not persisted:
+                final_response, failed, _turn_exit_reason = "", True, "session_persistence_failed"
+                return _verdict("break")
+            _turn_exit_reason = "tool_handoff"
+            agent._safe_print(f"\n{final_response}\n")
+            if agent.stream_delta_callback:
+                with suppress(Exception):
+                    agent.stream_delta_callback(final_response)
+                    agent.stream_delta_callback(None)
+            return _verdict("break")
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0

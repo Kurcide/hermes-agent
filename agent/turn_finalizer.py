@@ -155,7 +155,10 @@ def _resolve_budget_fallback(
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete.
-    _kanban_task = os.environ.get("HERMES_KANBAN_TASK") if budget_exhausted else None
+    _kanban_task = (
+        os.environ.get("HERMES_KANBAN_TASK")
+        if budget_exhausted and _turn_exit_reason != "tool_handoff" else None
+    )
     # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
     # treating it as a protocol violation). This applies whether the user-facing fallback came from the
     # summary call or an explicitly pending continuation; both exhausted the task budget and must advance
@@ -400,22 +403,23 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
+    messages, response_origin=None, response_provenance=None,
 ) -> Tuple[Any, bool, Optional[Any]]:
-    """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
+    """Transform model output, then publish the final turn with its actual origin.
     Returns ``(final_response, transformed, pre_transform_response)``."""
     transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
-    for _hook_result in _invoke_hook_safely(
-        "transform_llm_output", logger,
-        response_text=final_response,
-        session_id=agent.session_id or "",
-        model=agent.model,
-        platform=platform,
-    ):
-        if isinstance(_hook_result, str) and _hook_result:
-            pre_transform, final_response, transformed = final_response, _hook_result, True
-            break
+    # Runtime receipts must not be rewritten by model-output transforms.
+    if response_origin != "runtime":
+        for _hook_result in _invoke_hook_safely(
+            "transform_llm_output", logger,
+            response_text=final_response,
+            session_id=agent.session_id or "",
+            model=agent.model,
+            platform=platform,
+        ):
+            if isinstance(_hook_result, str) and _hook_result:
+                pre_transform, final_response, transformed = final_response, _hook_result, True
+                break
     # Detached forks are internal work and must not publish turns under the parent's session ID.
     if not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
@@ -428,6 +432,8 @@ def _apply_output_hooks(
             conversation_history=list(messages),
             model=agent.model,
             platform=platform,
+            **({"response_origin": response_origin, "response_provenance": response_provenance}
+               if response_origin else {}),
         )
     return final_response, transformed, pre_transform
 
@@ -450,10 +456,17 @@ def finalize_turn(
         logger=logger,
     )
 
+    runtime_handoff = _turn_exit_reason == "tool_handoff"
+    response_provenance = None
+    if runtime_handoff:
+        response_provenance = {
+            key: value for key, value in messages[-1]["display_metadata"].items()
+            if key != "response_origin"
+        }
     completed = (
         final_response is not None
         and not failed
-        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and (runtime_handoff or api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
@@ -495,9 +508,9 @@ def finalize_turn(
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not runtime_handoff:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if not interrupted and not runtime_handoff:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
@@ -509,6 +522,8 @@ def finalize_turn(
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+            response_origin="runtime" if runtime_handoff else None,
+            response_provenance=response_provenance,
         )
 
     # Context engine observation hook: the turn finished with the finalized transcript.
@@ -565,6 +580,9 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if runtime_handoff:
+        result["response_origin"] = "runtime"
+        result["response_provenance"] = response_provenance
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway

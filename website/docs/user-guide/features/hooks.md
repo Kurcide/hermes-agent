@@ -440,11 +440,12 @@ Payload fields below are the exact event-specific fields supplied by each call s
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
+| `post_tool_batch` | Normal completion | After a single successful, persisted tool call; return `FinishTurn` or `None`. Python plugins only. | `session_id`, `task_id`, `turn_id`, `api_request_id`, `platform`, `tool_name`, `tool_call_id`, `tool_arguments`, `tool_result` | Original arguments and persisted result content may contain private data. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `response_origin`, `response_provenance` | Full prompt, response, and history. Runtime handoffs are identified by origin and provenance, not attributed to the configured model. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -657,6 +658,33 @@ def register(ctx):
 ```
 
 ---
+
+### `post_tool_batch`
+
+A Python plugin can finish the current turn with an authoritative runtime receipt
+after an explicitly requested terminal handoff. Register a callback that returns
+`hermes_cli.tool_completion.FinishTurn(text=..., tool_call_id=...)`, or `None` to
+continue normally. Return the directive from the hook, not the tool handler.
+
+Hermes invokes this hook only after the current single successful tool result is
+persisted, with no interruption, guardrail halt, or newly applied/pending steering.
+Mixed batches execute all ordinary calls and continue normally. Arguments and
+tool names describe the original wire call; `tool_result` is its persisted content.
+The returned call ID must match that current call. Exceptions, invalid returns and
+hook timeouts continue normally; input arriving during the callback takes priority.
+
+The plugin must establish that its explicit terminal operation hands off the
+current request. Successful submission alone does not prove that other foreground
+obligations are complete. The native loop cannot infer that scope from prose.
+
+Hermes persists a closing assistant row with `display_kind="runtime_handoff"`
+and origin/identity metadata, then uses ordinary finalization and delivery. No
+additional provider call or usage is fabricated. The result has
+`response_origin="runtime"` and `response_provenance` containing `type="tool_handoff"`
+plus session, task, turn, API-request and tool-call identities. `post_llm_call`
+receives that same origin/provenance; model-output transforms are skipped. These
+fields establish authorship and the completed foreground turn, not background
+completion or downstream delivery. Later user turns retain the normal tool loop.
 
 ### `pre_llm_call`
 

@@ -107,6 +107,13 @@ _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+    # post_tool_batch: after one successful, persisted tool result, with no pending
+    # input. Return hermes_cli.tool_completion.FinishTurn or None. Kwargs:
+    # session_id, task_id, turn_id, api_request_id, platform, tool_name,
+    # tool_call_id, tool_arguments (original JSON), tool_result (persisted content).
+    # Explicit terminal-handoff scope is the plugin's responsibility; mixed
+    # batches never invoke this hook. A directive is runtime-authored, not an LLM response.
+    "post_tool_batch",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
@@ -220,7 +227,7 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "post_tool_batch"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

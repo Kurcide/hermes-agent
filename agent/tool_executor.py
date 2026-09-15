@@ -1035,6 +1035,10 @@ def _commit_tool_result(
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
 
+    # Ephemeral executor outcome, consumed at this batch's normal-finish boundary.
+    # Set only AFTER the canonical flush; tool-produced content cannot set it.
+    tool_message["_tool_execution_succeeded"] = observed and not (is_error or blocked or effect_disposition == "unknown")
+
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
         # reconstruct the result even if the UI bridge dies mid-projection.
